@@ -19,13 +19,13 @@ gbif_email <- Sys.getenv("gbif_email")
 # 1. Prepare list of potentially invasive species (present - not yet present) #
 # 1a. List of taxonIDs from species in GRIIS checklist Belgium (https://www.gbif.org/dataset/6d9e952f-948c-4483-9807-575348147c7e) ###
 
-df <-read_delim("./priorspecies/dwca-unified-checklist-v1.12/taxon.txt")
+df <-read_delim("./dwca-unified-checklist-v1.12/taxon.txt")
 df <- df[df$kingdom =="Plantae",] %>% 
       mutate_at("taxonID", str_replace, "https://www.gbif.org/species/", "")
 
 # 1b. List of taxonIDs from horizonscanningtool CABI #
 
-cabi <- read_delim("./priorspecies/Horizonscan/Horizon Scanning_20220125154122643.csv")
+cabi <- read_delim("./Horizonscan/Horizon Scanning_20220125154122643.csv")
 cabi <- cabi[-c(1:5),]
 colnames(cabi) <- cabi[1,]
 cabi <- cabi[which(cabi$Phylum=='Spermatophyta'|
@@ -48,17 +48,19 @@ cabi_id<-as.data.frame(get_gbifid(
 
 # problem: not found: (Senecio squalidus subsp. rupestris) How to solve? Log output and grep not Found, lookup seperately?
 
-# 1c Make a unified list of all species (horizon + present)
-#list_taxonID <- c(cabi_id$ids,df$taxonID) %>% unique() %>% na.omit()
+# 1c Compare with list of plants identified in trade by Scheers et al.
+list_taxonID <- c(cabi_id$ids,df$taxonID) %>% unique() %>% na.omit()
 
-#Compare cabi-GRISS list with list frome Scheers et al.
-Scheers<-read_excel("./priorspecies/Lijst_Handel_ScheersK.xlsx", range = "A4:D290")
+#Compare list_taxonID with list from Scheers et al.
+Scheers<-read_delim("./List_Scheers/Lijst_Handel_ScheersK.csv")
 Scheers<-Scheers[Scheers$`Taxon category`=="species",]
-Scheers<-Scheers[grep("[ ]{1}", Scheers$'Horticultural name'), ]
+Scheers<-Scheers[grep("[ ]{1,}", Scheers$'Horticultural name'), ]
+Scheers_list <- Scheers$`Horticultural name`
+
 
 library(taxize)
 Scheers_id<-as.data.frame(get_gbifid(
-  na.omit(Scheers$`Horticultural name`),
+  Scheers_list,
   ask = TRUE,
   messages = TRUE,
   rows = 1,
@@ -67,13 +69,16 @@ Scheers_id<-as.data.frame(get_gbifid(
   sciname = NULL,
 ))
 
-# 2. Download occurence data from GBIF
+# Compare Scheers_id with taxon_list
+Scheers_taxonKeys<-setdiff(Scheers_id$ids, list_taxonID)
+
+# 2. Download occurence data from GBIF (for any of the 3 datasets HORIZONSCAN: Scheers_taxonkeys & CABI versus GRIIS)
 # 2a. for CABI-species
 
 cabi_taxonkeys <-cabi_id$ids %>% na.omit
 occurence_counts <- vector()
 for (i in 1:length(cabi_taxonkeys)){
-  occurence_counts[i]<-occ_count(cabi_taxonkeys[i])
+  occurence_counts[i]<-occ_count(cabi_taxonkeys[i], georeferenced =TRUE)
 }
 
 
