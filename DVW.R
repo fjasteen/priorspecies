@@ -22,6 +22,7 @@ gbif_email <- Sys.getenv("gbif_email")
 df <-read_delim("./dwca-unified-checklist-v1.12/taxon.txt")
 df <- df[df$kingdom =="Plantae",] %>% 
       mutate_at("taxonID", str_replace, "https://www.gbif.org/species/", "")
+GRIIS_taxonID <- df$taxonID
 
 # 1b. List of taxonIDs from horizonscanningtool CABI #
 
@@ -46,10 +47,9 @@ cabi_id<-as.data.frame(get_gbifid(
   sciname = NULL,
   ))
 
-# problem: not found: (Senecio squalidus subsp. rupestris) How to solve? Log output and grep not Found, lookup seperately?
+cabi_taxonID<-cabi_id$ids
 
-# 1c Compare with list of plants identified in trade by Scheers et al.
-list_taxonID <- c(cabi_id$ids,df$taxonID) %>% unique() %>% na.omit()
+# problem: not found: (Senecio squalidus subsp. rupestris) How to solve? Log output and grep not Found, lookup seperately?
 
 #Compare list_taxonID with list from Scheers et al.
 Scheers<-read_delim("./List_Scheers/Lijst_Handel_ScheersK.csv")
@@ -57,7 +57,7 @@ Scheers<-Scheers[Scheers$`Taxon category`=="species",]
 Scheers<-Scheers[grep("[ ]{1,}", Scheers$'Horticultural name'), ]
 Scheers_list <- Scheers$`Horticultural name`
 
-
+# Get GBIF backbone taxon ID from taxonomic names, based on species rank, accepted status, matchtype exact #
 library(taxize)
 Scheers_id<-as.data.frame(get_gbifid(
   Scheers_list,
@@ -69,38 +69,52 @@ Scheers_id<-as.data.frame(get_gbifid(
   sciname = NULL,
 ))
 
-# Compare Scheers_id with taxon_list
-Scheers_taxonKeys<-setdiff(Scheers_id$ids, list_taxonID)
+Scheers_taxonID<-Scheers_id$ids
 
-# 2. Download occurence data from GBIF (for any of the 3 datasets HORIZONSCAN: Scheers_taxonkeys & CABI versus GRIIS)
-# 2a. for CABI-species
+# All horizonscan species Scheers et al. + cabi
+horizon_taxonID <- unique(c(Scheers_taxonID,cabi_taxonID))
 
-cabi_taxonkeys <-cabi_id$ids %>% na.omit
-occurence_counts <- vector()
-for (i in 1:length(cabi_taxonkeys)){
-  occurence_counts[i]<-occ_count(cabi_taxonkeys[i], georeferenced =TRUE)
+# Duplicate Species in GRIIS list and in horizonscan list?
+horizon_taxonKeys <- setdiff(horizon_taxonID, GRIIS_taxonID) %>% na.omit
+
+# 2. Download occurence data from GBIF 
+# count occurence data as indication (occ_count does not take multiple values for basisOfRecord)
+occurence_counts_HO <- vector()
+occurence_counts_PR <- vector()
+occurence_counts_UK <- vector()
+for (i in 1:length(horizon_taxonKeys)){
+  occurence_counts_HO[i]<-occ_count(horizon_taxonKeys[i], 
+                                    georeferenced =TRUE, 
+                                    basisOfRecord= "HUMAN_OBSERVATION", 
+                                    from= 1900, to=2022) #didn't add this one the first time
 }
+for (i in 1:length(horizon_taxonKeys)){
+  occurence_counts_PR[i]<-occ_count(horizon_taxonKeys[i], 
+                                    georeferenced =TRUE, 
+                                    basisOfRecord= "PRESERVED_SPECIMEN", 
+                                    from= 1900, to=2022)
+}
+for (i in 1:length(horizon_taxonKeys)){
+  occurence_counts_UK[i]<-occ_count(horizon_taxonKeys[i], 
+                                    georeferenced =TRUE, 
+                                    basisOfRecord= "UNKNOWN", 
+                                    from= 1900, to=2022)
+}
+occurence_counts<-occurence_counts_HO + occurence_counts_PR + occurence_counts_UK
 
+#There is a slight difference in the way records are counted here vs. results from occ_search(). For equivalent outcomes, in the occ_search() function use hasCoordinate=TRUE, and hasGeospatialIssue=FALSE to have the same outcome for this function using georeferenced=TRUE.!!!!
+num_occ<-data.frame(horizon_taxonKeys,occurence_counts)
+num_occ<- num_occ[order(num_occ$occurence_counts, decreasing = T),]
+View(num_occ)
+#num_occ_large<-num_occ[num_occ$occurence_counts >= 100000,]
+#num_occ_small<-num_occ[num_occ$occurence_counts <= 100000,]
 
-num_occ<-data.frame(cabi_taxonkeys,occurence_counts)
-num_occ_large<-num_occ[num_occ$occurence_counts >= 100000,]
-num_occ_small<-num_occ[num_occ$occurence_counts <= 100000,]
-
-taxonkey_set1 <- pred_in("taxonKey", cabi_taxonkeys)
-taxonkey_set1 <- pred_in("taxonKey", num_occ_small$cabi_taxonkeys)
-taxonkey_set2 <- pred_in("taxonKey", num_occ_large$cabi_taxonkeys)
+#taxonkey_set1 <- pred_in("taxonKey", cabi_taxonkeys)
+taxonkey_set1 <- pred_in("taxonKey", num_occ$horizon_taxonKeys)
 
 # initiate download
 
 set1 <- occ_download(taxonkey_set1,
-                     pred("hasCoordinate", TRUE), # Georefereerde gegevens
-                     pred_gte("year", 1900), # alle waarnemingen vanaf 1900
-                     pred_in("basisOfRecord", c("HUMAN_OBSERVATION", "PRESERVED_SPECIMEN", "UNKNOWN")),
-                     user = gbif_user, 
-                     pwd = gbif_pwd, 
-                     email = gbif_email)
-
-set2 <- occ_download(taxonkey_set2,
                      pred("hasCoordinate", TRUE), # Georefereerde gegevens
                      pred_gte("year", 1900), # alle waarnemingen vanaf 1900
                      pred_in("basisOfRecord", c("HUMAN_OBSERVATION", "PRESERVED_SPECIMEN", "UNKNOWN")),
@@ -127,11 +141,11 @@ repeat{
 # 2b. for GRIIS-species
 
 acceptedKeys <-df$taxonID
-taxonkey_set3 <- pred_in("taxonKey", acceptedKeys)
+taxonkey_set2 <- pred_in("taxonKey", acceptedKeys)
 
 # intiate download
 
-set3 <- occ_download(taxonkey_set3,
+set2 <- occ_download(taxonkey_set2,
                      pred("hasCoordinate", TRUE), # Georefereerde gegevens
                      #pred_gte("year", 2000), # alle waarnemingen vanaf 2000
                      user = gbif_user, 
@@ -153,10 +167,8 @@ repeat{
   print(test_set2$status)
 }
 
-#2b. Compare list CABI with list Kevin Scheers 280 additional plants
 
-
-# 3. Climate matching CABI species
+# 3. Climate matching horizonscan species
 # Testcase 1 species from CABI: C:\Users\frederique_steen\Documents\GitHub\priorspecies\0120469-210914110416597.zip
 library(readr)
 library(googlesheets4)
@@ -186,18 +198,18 @@ get_cred <- function(x){
 
 #vector with taxonkeys
 #taxonkeys <- num_occ_small$cabi_taxonkeys#as.integer(unique(cabi_id$ids %>% na.omit))
-taxonkeys <- num_occ_large$cabi_taxonkeys
+taxonkeys <- num_occ$horizon_taxonKeys
 #climate matching function
 
-zipfile <- "C:\Users\frederique_steen\Documents\GitHub\priorspecies\large_occ\0144617-210914110416597_large.zip"
+zipfile <- "C:/Users/frederique_steen/Documents/Data/priorspecies/occurence_data/occurence_data_horizon_cm/0147366-210914110416597.zip"
 #target <- 75 
-target <- 1
+target <- 2
 cuts <- ceiling(length(taxonkeys)/target)
 gc(reset = TRUE)
-if(memory.limit() <= 3000 * length(taxonkeys)){
-  memory.limit(size = 3000 * length(taxonkeys))
+if(memory.limit() <= 300 * length(taxonkeys)){
+  memory.limit(size = 300 * length(taxonkeys))
 }
-for(i in 1:cuts){
+for(i in 25:cuts){
   gc(reset = TRUE)
   if(i == 1){
     start <- 1
@@ -220,12 +232,19 @@ for(i in 1:cuts){
   assign(paste0("output_", i), output)
 }
 
+#running for 25:cuts:
+# Download file size: 0 MB
+# On disk at C:\Users\frederique_steen\Documents\GitHub\priorspecies\0148301-210914110416597.zip
+# Error in climate_match(region = "Belgium", taxonkey = taxonkeys_sub, BasisOfRecord = c("HUMAN_OBSERVATION",  : 
+# No useable data for 7445953,6063723,7329389 left after filters. Try omiting or changing the filter setup.
+# Stopped at cut 240 for the above taxonKeys  (480)                                                                                   In addition: There were 50 or more warnings (use warnings() to see the first 50)
+
 #merge all the resulting data in one file (& write as csv)
 final_unfiltered <- data.frame()
 final_filtered <- data.frame()
 final_cm <- data.frame()
 raw_data_final <- data.frame()
-for(i in 1:cuts){
+for(i in 25:cuts){
   data_list <- get(paste0("output_", i))
   data_filtered <- data_list$filtered
   data_cm <- data_list$cm
@@ -256,15 +275,15 @@ for(i in 1:cuts){
     raw_data_final <- rbind(raw_data_final, data_raw)
   }
 }
-final_filtered <- final_filtered %>% 
+final_filtered2 <- final_filtered %>% 
   distinct(taxonKey, Classification, scenario, .keep_all = TRUE)
-write_csv(final_filtered, "./plants_data_overlay_future_filtered.csv")
-final_cm <- final_cm %>% 
+write_csv(final_filtered, "./plants_data_overlay_future_filtered2.csv")
+final_cm2 <- final_cm %>% 
   distinct(taxonKey, Classification, scenario, .keep_all = TRUE) 
-write_csv(final_cm, "./plants_data_overlay_future.csv")
-final_unfiltered <- final_unfiltered %>% 
+write_csv(final_cm, "./plants_data_overlay_future2.csv")
+final_unfiltered2 <- final_unfiltered %>% 
   distinct(taxonKey, Classification, .keep_all = TRUE) 
-write_csv(final_unfiltered, "./plants_data_overlay_present.csv")
+write_csv(final_unfiltered, "./plants_data_overlay_present2.csv")
 write_csv(raw_data_final, gsub(".zip", ".csv", zipfile))
 
 # 4. GRIIS Intersect met terreinen in beheer van DVW ####
