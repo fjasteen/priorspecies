@@ -15,6 +15,11 @@ gbifcleaner <- function(zipfile){
   memory.limit(size = fileinfo$size/1000)
   gc(reset = TRUE)
   
+  ## remove .zip for later use ####
+  code <- sub(pattern = ".zip", 
+              replacement = "",
+              x = zipfile)
+  
   ## Read data ####
   data <- read_tsv(unz(zipfile, "occurrence.txt"), 
                    col_types = c(decimalLatitude = col_number(),
@@ -46,7 +51,9 @@ gbifcleaner <- function(zipfile){
   ### Export data ####
   write_tsv(data_redux, "./data/data_redux.txt")
   ### zipfile ####
-  zip(zipfile = zipfile,
+  zipfile_2 <- paste0(code, "_redux.zip")
+  
+  zip(zipfile = zipfile_2,
       files = "./data/data_redux.txt",
       zip = Sys.getenv("R_ZIPCMD", "zip"))
   ### Remove temp txt ####
